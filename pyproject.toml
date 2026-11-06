@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel-qnx"
+version = "0.1.0"
+description = "Sentinel for QNX: host-based AI security auditor for QNX 8.0 system images"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+[project.scripts]
+sentinel = "sentinel.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sentinel*"]
