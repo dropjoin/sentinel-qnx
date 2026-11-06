@@ -1,0 +1,5 @@
+# Sample QNX buildfile (mkifs) with a planted flaw. DO NOT SHIP.
+[image=0x800000]
+[perms=0755] bin/procnto-smp-instr = /qnx800/target/qnx/bin/procnto
+[perms=0777] data/app-config = ./config/app-config.json
+bin/io-pkt-v6-hc = /qnx800/target/qnx/bin/io-pkt-v6-hc

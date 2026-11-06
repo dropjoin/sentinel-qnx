@@ -1,0 +1,6 @@
+# Sample sshd_config with planted flaws. DO NOT SHIP.
+Port 22
+PermitRootLogin yes
+PasswordAuthentication yes
+PermitEmptyPasswords yes
+X11Forwarding yes

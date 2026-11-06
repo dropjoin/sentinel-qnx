@@ -1,0 +1,5 @@
+# Clean sample QNX buildfile: least-privilege perms everywhere.
+[image=0x800000]
+[perms=0755] bin/procnto-smp-instr = /qnx800/target/qnx/bin/procnto
+[perms=0644] data/app-config = ./config/app-config.json
+bin/io-pkt-v6-hc = /qnx800/target/qnx/bin/io-pkt-v6-hc

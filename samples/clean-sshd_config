@@ -1,0 +1,6 @@
+# Clean sample sshd_config.
+Port 22
+PermitRootLogin no
+PasswordAuthentication no
+PermitEmptyPasswords no
+X11Forwarding no

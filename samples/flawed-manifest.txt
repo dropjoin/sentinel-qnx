@@ -1,0 +1,5 @@
+# Bundled components, sample image manifest (planted flaws)
+openssl = 1.0.2
+busybox = 1.24.2
+zlib = 1.2.11
+customdriver = 3.1.0

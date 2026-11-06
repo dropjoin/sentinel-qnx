@@ -1,0 +1,4 @@
+# Bundled components, clean sample image manifest
+openssl = 3.0.13
+zlib = 1.3.1
+customdriver = 3.1.0
