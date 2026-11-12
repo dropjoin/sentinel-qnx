@@ -2,30 +2,47 @@
 repair, into an output directory, and leave everything else untouched.
 
 Auto-fixable: console shell spawns (commented out), inetd cleartext
-lines (commented out), chmod 777/666 -> 755, umask 000 -> 022, and
-buildfile perms with the others-write bit cleared. Component upgrades
-and APS design are human decisions and are never auto-applied.
+lines (commented out), world-writable chmod modes (write bits
+cleared: 777 -> 755, 666 -> 644, symbolic modes normalized to 755),
+umask 000 -> 022, and buildfile perms with the group/other write bits
+cleared (special bits kept: 4777 -> 4755). Component upgrades, sshd
+settings, account changes and APS design are human decisions and are
+never auto-applied.
+
+Detection and repair share one definition of "world-writable" (see
+sentinel.buildfile), so a mode the auditor flags is a mode the fixer
+clears: fix output re-audits clean for every auto-fixable rule.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-from .rules import PERMISSIVE, SHELL_ON_CONSOLE, TELNET_FTP
+from .buildfile import fixed_octal_mode, mode_grants_world_write
+from .rules import CHMOD_CMD, SHELL_ON_CONSOLE, TELNET_FTP
 
-CHMOD_FIX = re.compile(r"\bchmod\s+(-R\s+)?(777|666|a\+rwx)\b")
 UMASK_FIX = re.compile(r"\bumask\s+0+\b")
-PERMS_FIX = re.compile(r"(perms=)(0?[0-7]{3,4})")
+PERMS_FIX = re.compile(r"(perms=)([0-7]+)")
+_OCTAL_TOKEN = re.compile(r"[0-7]+")
 
 
 def _fix_perms_value(v: str) -> str:
-    digits = v.lstrip("0") or "0"
-    if len(digits) < 3:
+    try:
+        return fixed_octal_mode(v)
+    except ValueError:
         return v
-    others = int(digits[-1]) & ~2
-    group = int(digits[-2]) & ~2 if digits[-2].isdigit() else 0
-    return "0" + digits[-3] + str(group) + str(others) if len(digits) == 3 \
-        else "0" + digits[-3] + str(group) + str(others)
+
+
+def _fix_chmod(m: re.Match) -> str:
+    mode = m.group(2)
+    if not mode_grants_world_write(mode):
+        return m.group(0)
+    core, sep, tail = mode.partition(";")
+    if _OCTAL_TOKEN.fullmatch(core):
+        fixed = fixed_octal_mode(core)
+    else:
+        fixed = "755"
+    return "chmod " + m.group(1) + fixed + sep + tail
 
 
 def fix_text(name: str, text: str) -> str:
@@ -38,15 +55,28 @@ def fix_text(name: str, text: str) -> str:
                     TELNET_FTP.search(stripped):
                 line = "# SENTINEL-FIX disabled: " + stripped
             else:
-                line = CHMOD_FIX.sub(lambda m: "chmod " +
-                                     (m.group(1) or "") + "755", line)
+                line = CHMOD_CMD.sub(_fix_chmod, line)
                 line = UMASK_FIX.sub("umask 022", line)
-                if name.endswith(".build"):
+                if name.lower().endswith(".build"):
                     line = PERMS_FIX.sub(
                         lambda m: m.group(1) + _fix_perms_value(m.group(2)),
                         line)
         out_lines.append(line)
     return "\n".join(out_lines) + ("\n" if text.endswith("\n") else "")
+
+
+def _output_path(dest: Path, name: str) -> Path:
+    """Mirror the input path under dest, without ever escaping it.
+
+    Basename-only output silently overwrote one input when two inputs
+    shared a basename; mirroring keeps every input distinct. Anchor,
+    '.' and '..' components are dropped so a crafted name cannot
+    write outside the output directory.
+    """
+    parts = [p for p in Path(name).parts if p not in ("/", ".", "..")]
+    if not parts:
+        parts = ["unnamed"]
+    return dest.joinpath(*parts)
 
 
 def fix_files(files: dict[str, str], out_dir: str) -> dict[str, str]:
@@ -55,7 +85,8 @@ def fix_files(files: dict[str, str], out_dir: str) -> dict[str, str]:
     written: dict[str, str] = {}
     for name, text in files.items():
         fixed = fix_text(name, text)
-        target = dest / Path(name).name
+        target = _output_path(dest, name)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(fixed)
         written[str(target)] = fixed
     return written

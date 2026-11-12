@@ -58,7 +58,43 @@ def parse_buildfile(text: str) -> list[Entry]:
 
 def world_writable(perms: str) -> bool:
     """True when an octal or symbolic perms value grants others-write."""
-    p = perms.strip().lstrip("0")
-    if p.isdigit() and len(p) >= 3:
-        return int(p[-1]) & 2 == 2
-    return "o+w" in perms or "a+w" in perms or "a=rwx" in perms
+    return mode_grants_world_write(perms)
+
+
+_OCTAL_MODE = re.compile(r"[0-7]+")
+_SYMBOLIC_CLAUSE = re.compile(r"([ugoa]*)([+\-=])([rwxXstugo]*)")
+
+
+def mode_grants_world_write(mode: str) -> bool:
+    """True when a chmod/buildfile mode grants write to 'others'.
+
+    Octal modes are evaluated numerically, so leading zeros (0777),
+    short modes (77, 7) and setuid/setgid/sticky modes (4777) are all
+    handled. Symbolic modes are evaluated clause by clause: a clause
+    grants others-write when it targets 'o'/'a' (or no class, which
+    means all) with '+'/'=' and includes 'w'. Clauses that remove
+    write ('o-w') or omit it ('o=r') do not.
+    """
+    m = mode.strip().split(";", 1)[0]
+    if _OCTAL_MODE.fullmatch(m):
+        return int(m, 8) & 0o002 != 0
+    for clause in m.split(","):
+        cm = _SYMBOLIC_CLAUSE.fullmatch(clause)
+        if cm is None:
+            continue
+        who, op, perms = cm.groups()
+        if (op in ("+", "=") and "w" in perms
+                and ("o" in who or "a" in who or not who)):
+            return True
+    return False
+
+
+def fixed_octal_mode(mode: str) -> str:
+    """Octal mode with group/other write bits cleared, special bits kept.
+
+    '0777' -> '0755', '666' -> '644', '4777' -> '4755'. The result
+    keeps the input's digit width (minimum 3). Raises ValueError on
+    non-octal input; callers must validate first.
+    """
+    cleared = int(mode, 8) & ~0o022
+    return format(cleared, "0%do" % max(3, len(mode)))

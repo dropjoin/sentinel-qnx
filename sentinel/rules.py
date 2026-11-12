@@ -2,7 +2,7 @@
 
 Each rule scans QNX buildfiles, startup scripts and image manifests for
 production-unsafe configurations. Findings carry severity, file, line, a
-plain-English explanation and a suggested patch. The AI explanation layer
+plain-English explanation and a suggested patch. The explanation layer
 sits on top of these findings; the rules themselves never guess.
 """
 
@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+from .buildfile import mode_grants_world_write
 
 
 @dataclass
@@ -41,14 +43,49 @@ VULN_COMPONENTS = [
 
 SHELL_ON_CONSOLE = re.compile(
     r"\b(on|spawn|reopen)\b[^\n]*\b(sh|ksh|esh)\b", re.IGNORECASE)
+# Cleartext services, in the shapes they actually ship: an inetd.conf
+# service line ("telnet stream tcp ..."), an inetd launch whose line
+# names a cleartext daemon, or a service entry pointing at inetd.
 TELNET_FTP = re.compile(r"^\s*(telnet|ftp|tftp)\b[^\n]*\binetd\b|"
-                        r"\binetd\b[^\n]*\b(telnetd|ftpd)\b", re.IGNORECASE)
-PERMISSIVE = re.compile(r"\bchmod\s+(-R\s+)?(777|666|a\+rwx)\b|\bumask\s+0+\b")
-VERSION_LINE = re.compile(r"^([A-Za-z0-9_.+-]+)[\s:=]+v?(\d+\.\d+(?:\.\d+)?)\s*$")
+                        r"\binetd\b[^\n]*\b(telnetd|ftpd|tftpd)\b|"
+                        r"^\s*(telnet|ftp|tftp)\s+(stream|dgram)\b",
+                        re.IGNORECASE)
+UMASK_PERMISSIVE = re.compile(r"\bumask\s+0+\b")
+# chmod plus its flags, capturing the mode token; whether the mode is
+# world-writable is decided numerically/symbolically by
+# mode_grants_world_write, not by enumerating literals.
+CHMOD_CMD = re.compile(r"\bchmod\s+((?:(?:-[A-Za-z]+|--)\s+)*)(\S+)")
+# Name + version, tolerating the shapes real manifests use: an
+# optional 'v', a letter suffix (OpenSSL 1.0.2k), a distro tail
+# (1.0.2k-1ubuntu1) and a trailing comment.
+VERSION_LINE = re.compile(
+    r"^([A-Za-z0-9_.+-]+)[\s:=\-]+v?(\d+\.\d+(?:\.\d+)?)[a-z]?"
+    r"(?:[-+~][A-Za-z0-9.+~]*)?\s*(?:#.*)?$")
 APS_MARKER = re.compile(r"\b(aps|SCHED_APS|adaptive\s+partition)", re.IGNORECASE)
 
 
-def audit_text(file: str, text: str, whole_set_has_aps: bool) -> list[Finding]:
+def permissive_chmod(line: str):
+    """The chmod match when the line sets a world-writable mode, else None."""
+    m = CHMOD_CMD.search(line)
+    if m and mode_grants_world_write(m.group(2)):
+        return m
+    return None
+
+
+def _has_aps(texts) -> bool:
+    """True when a non-comment line configures adaptive partitioning.
+
+    Comment-only mentions ("# TODO: add aps") are not configuration
+    and must not silence the set-level check.
+    """
+    for text in texts:
+        for raw in text.splitlines():
+            if APS_MARKER.search(raw.split("#", 1)[0]):
+                return True
+    return False
+
+
+def audit_text(file: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     lines = text.splitlines()
     for i, raw in enumerate(lines, start=1):
@@ -74,7 +111,7 @@ def audit_text(file: str, text: str, whole_set_has_aps: bool) -> list[Finding]:
                 "access or disable remote login in production images.",
                 "Remove the inetd telnet/ftp entries; ship sshd only, "
                 "with key-based auth."))
-        if PERMISSIVE.search(line):
+        if UMASK_PERMISSIVE.search(line) or permissive_chmod(line):
             findings.append(Finding(
                 "PERMISSIVE_MODE", "HIGH", file, i,
                 "World-writable permission set in startup script",
@@ -88,7 +125,10 @@ def audit_text(file: str, text: str, whole_set_has_aps: bool) -> list[Finding]:
         if m:
             name, ver = m.group(1).lower(), m.group(2)
             for comp, prefix, sev, why in VULN_COMPONENTS:
-                if name == comp and ver.startswith(prefix):
+                # The trailing "." lets two-component versions ("1.0")
+                # match a dotted prefix ("1.0.") without changing any
+                # three-component match.
+                if name == comp and (ver + ".").startswith(prefix):
                     findings.append(Finding(
                         "VULN_COMPONENT", sev, file, i,
                         f"Vulnerable bundled component: {comp} {ver}",
@@ -101,13 +141,15 @@ def audit_text(file: str, text: str, whole_set_has_aps: bool) -> list[Finding]:
 
 def audit_files(files: dict[str, str]) -> list[Finding]:
     """Audit a set of {filename: text}. Adds set-level findings."""
-    has_aps = any(APS_MARKER.search(t) for t in files.values())
+    has_aps = _has_aps(files.values())
     out: list[Finding] = []
     for name, text in files.items():
-        out.extend(audit_text(name, text, has_aps))
-        if name.endswith(".build"):
+        out.extend(audit_text(name, text))
+        if name.lower().endswith(".build"):
             out.extend(audit_buildfile(name, text))
-        if "sshd" in name.lower():
+        # The sshd_config filename (or a drop-in directory named
+        # sshd_config.d), not any path that merely mentions sshd.
+        if "sshd_config" in name.lower():
             out.extend(audit_sshd(name, text))
         base = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
         if base in ("passwd", "shadow", "master.passwd"):
@@ -131,7 +173,6 @@ def audit_files(files: dict[str, str]) -> list[Finding]:
 def audit_buildfile(file: str, text: str) -> list[Finding]:
     """Rules that need parsed buildfile structure, not raw text."""
     from .buildfile import parse_buildfile, world_writable
-
     out: list[Finding] = []
     for e in parse_buildfile(text):
         perms = e.attrs.get("perms", "")
@@ -152,7 +193,8 @@ def audit_buildfile(file: str, text: str) -> list[Finding]:
 
 SSHD_SETTING = re.compile(
     r"^\s*(PermitRootLogin|PasswordAuthentication|PermitEmptyPasswords|"
-    r"Protocol|X11Forwarding)\s+(\S+)", re.IGNORECASE)
+    r"Protocol|X11Forwarding)\s+([^,\s#]+(?:\s*,\s*[^,\s#]+)*)",
+    re.IGNORECASE)
 SSHD_BAD = {
     "permitrootlogin": ("yes", "CRITICAL",
                         "SSH root login is enabled",
@@ -184,17 +226,25 @@ SSHD_BAD = {
 
 
 def audit_sshd(file: str, text: str) -> list[Finding]:
+    """sshd_config checks. OpenSSH uses the FIRST obtained value of each
+    keyword, so only the first occurrence of a keyword is evaluated;
+    later lines for the same keyword do not take effect (outside Match
+    blocks, which this checker does not model)."""
     out: list[Finding] = []
+    seen: set[str] = set()
     for i, raw in enumerate(text.splitlines(), start=1):
         m = SSHD_SETTING.match(raw)
         if not m:
             continue
         key, val = m.group(1).lower(), m.group(2).lower()
+        if key in seen:
+            continue
+        seen.add(key)
         spec = SSHD_BAD.get(key)
         if spec and val == spec[0]:
             out.append(Finding("SSHD_" + key.upper(), spec[1], file, i,
                                spec[2], spec[3], spec[4]))
-        if key == "protocol" and val.startswith("1"):
+        if key == "protocol" and "1" in [p.strip() for p in val.split(",")]:
             out.append(Finding(
                 "SSHD_PROTOCOL1", "HIGH", file, i,
                 "SSH protocol 1 is enabled",
@@ -204,12 +254,21 @@ def audit_sshd(file: str, text: str) -> list[Finding]:
     return out
 
 
-PASSWD_LINE = re.compile(r"^([a-z_][a-z0-9_-]*):([^:]*):(\d+):", re.IGNORECASE)
+PASSWD_LINE = re.compile(
+    r"^([a-z_][a-z0-9_.-]*):([^:]*):(\d+):", re.IGNORECASE)
 
 
 def audit_passwd(file: str, text: str) -> list[Finding]:
-    """Account-file checks: empty password fields, uid 0 accounts."""
+    """Account-file checks: empty password fields, uid 0 accounts.
+
+    The empty-password check applies to passwd and shadow alike. The
+    uid-0 check applies only to passwd-format files: a shadow file's
+    third field is the last-change date, not a uid, so reading it as
+    one would flag ordinary accounts.
+    """
     out: list[Finding] = []
+    base = file.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    is_shadow = base == "shadow"
     for i, raw in enumerate(text.splitlines(), start=1):
         m = PASSWD_LINE.match(raw.strip())
         if not m:
@@ -225,7 +284,8 @@ def audit_passwd(file: str, text: str) -> list[Finding]:
                 "files ship like this surprisingly often.",
                 "Set a real password hash or lock the account "
                 "('*' / '!') if it never logs in interactively."))
-        if uid == "0" and user != "root":
+        # Numeric zero, so "00" counts as uid 0 too.
+        if not is_shadow and uid.lstrip("0") == "" and user != "root":
             out.append(Finding(
                 "EXTRA_UID0", "HIGH", file, i,
                 f"Non-root account '{user}' has uid 0",

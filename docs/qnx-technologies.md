@@ -14,9 +14,11 @@ Sentinel is a host tool, but everything it audits is QNX-specific:
 - **Resource managers and io-pkt**: cleartext-service and networking
   findings are phrased for QNX's resource-manager architecture rather
   than generic Unix daemons.
-- **QEMU target validation**: the demo flow boots the audited image
-  definition on the QNX SDP 8.0 Quick Start QEMU image, closing the
-  loop from static audit to a running QNX system.
+- **QEMU target validation**: booting the audited image definition
+  on the QNX SDP 8.0 Quick Start QEMU image is a manual validation
+  step outside the automated demo (`sh demo/run_demo.sh` covers
+  audit, report, fix and re-audit only). It closes the loop from
+  static audit to a running QNX system when run by hand.
 
 Roadmap: parse the compiled image's filesystem manifest directly,
 cross-check running-system state over a QNX target agent (qconn), and

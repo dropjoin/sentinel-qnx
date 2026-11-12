@@ -2,8 +2,8 @@
 
 The explanations are authored per rule family: an impact scenario (how
 the flaw is exploited on a real embedded target) and the remediation
-order. An optional model hook can rephrase them when configured, but
-the report is complete and deterministic without any model.
+order. The report is complete and deterministic without any model;
+every rule id the auditor can emit has an entry in IMPACT below.
 """
 from __future__ import annotations
 
@@ -32,6 +32,31 @@ IMPACT = {
                                 "a medical or automotive target that is "
                                 "a safety incident, not a performance "
                                 "bug.",
+    "SSHD_PERMITROOTLOGIN": "Anyone who guesses or leaks the root "
+                            "password lands straight in the most "
+                            "privileged account over the network, with "
+                            "no second account to slow them down.",
+    "SSHD_PASSWORDAUTHENTICATION": "Password logins invite automated "
+                                   "brute force against the default or "
+                                   "weak passwords embedded targets "
+                                   "so often ship with.",
+    "SSHD_PERMITEMPTYPASSWORDS": "Any account left without a password "
+                                 "can be opened remotely with no "
+                                 "credential at all.",
+    "SSHD_X11FORWARDING": "An attacker with an SSH session can abuse "
+                          "the forwarded X channel to snoop or inject "
+                          "input on a display the device was never "
+                          "meant to expose.",
+    "SSHD_PROTOCOL1": "Protocol 1 sessions can be decrypted and "
+                       "hijacked with decades-old attacks; a device "
+                       "that still negotiates it hands the network "
+                       "everything SSH was meant to protect.",
+    "EMPTY_PASSWORD": "An account with no password is an open door "
+                      "wherever a login prompt reaches it: console, "
+                      "SSH, or FTP. No exploit needed.",
+    "EXTRA_UID0": "A second uid-0 account is a ready-made backdoor "
+                  "whose actions are indistinguishable from root's, "
+                  "so misuse leaves no accountable trail.",
 }
 
 
@@ -48,7 +73,8 @@ def narrative(findings: list[Finding]) -> str:
              "Remediation order follows severity; fix critical and high "
              "before this image ships.", ""]
     for f in findings:
-        lines.append(f"[{f.severity}] {f.title} ({f.file}:{f.line})")
+        loc = f"{f.file}:{f.line}" if f.line else f.file
+        lines.append(f"[{f.severity}] {f.title} ({loc})")
         impact = IMPACT.get(f.rule_id)
         if impact:
             lines.append(f"  Impact scenario: {impact}")
